@@ -1,0 +1,596 @@
+---
+title: "FinalProject607"
+author: "aw"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Understanding the Value of Art
+
+As a former fine art student, the fine art market has always fascinated me as an enigmatic industry. For this project, I've sought out to propose a concept for collecting, and analyzing fine art data in order to better understand what drives investment in art, what makes it so valuable, and, if anything, what motivates people to invest in it in the first place. Is it actually a 'smart' place to park your money? My aim is to understand the driving factors behind art valuations and to discern the motivations for investing in art. And hopefully unearth some interesting insights along the way.
+
+## Data Collection
+
+The project consists of two main components:
+
+1.  **Web Scraping**: Implemented through RSelenium, the script automates the collection of art auction data, focusing on a broad range of artworks to maximize the diversity and range of the data collected.
+
+2.  **Data Analysis**: Utilizing a smaller, hand-collected sample from artprice, this phase aims at exploring trends and correlations within the art market.
+
+```{r libraries}
+library(stringr)
+library(tidyverse)
+library(dplyr)
+library(wdman)
+library(purrr)
+library(ggplot2)
+library(lubridate)
+library(rvest)
+library(xml2)
+library(httr)
+library(RSelenium)
+library(netstat)
+library(xaringan)
+```
+
+## Web Scraping with RSelenium
+
+In order to collect a robust dataset on the art market, and with little time to do so manually, I created a script to crawl and scrape data from the artprice website.\
+\
+For the sake of this demonstration, and code, the script goes through the flow of gathering the first 5 and last 5 artworks auctioned by the artist (the intention of this was to gather a big a range as possible of auction data). However, if time is not a constraint, I would recommend adjusting the code to move through individual pages and scrape all artworks, or at least until a certain threshold is met, in terms of artwork numbers, and auction dates represented.
+
+```{r scraping, eval=FALSE}
+
+
+#example, though this can be changed to include any list of artist names
+artists <- c("Ronald Brooks Kitaj")
+
+#web scraping using rselenium
+
+selenium_object <- selenium(retcommand = T, check = F)
+binman::list_versions("chromedriver")
+
+rD <- rsDriver(browser = "firefox", port = free_port(), verbose = FALSE, geckover = NULL)
+remDr <- rD[["client"]]
+
+login_url <- "https://www.artprice.com/identity"
+remDr$navigate(login_url)
+
+# input field selectors
+username_field <- remDr$findElement(using = 'css selector', "input[class='e2e-login-input']")
+password_field <- remDr$findElement(using = 'css selector', "input[class='e2e-pwd-input']")
+login_button <- remDr$findElement(using = 'css selector', "button[class='e2e-login-submit-btn']")
+
+#login credentials
+username_field$sendKeysToElement(list("abwrubel@gmail.com"))
+password_field$sendKeysToElement(list("Tigger123$%"))
+
+#login to artprice
+login_button$clickElement()
+
+Sys.sleep(5) 
+
+safe_extract <- function(artwork, css_selector) {
+  tryCatch({
+    element <- artwork$findElement(using = 'css selector', css_selector)
+    text <- element$getElementText()
+    return(text[[1]])
+  }, error = function(e) {
+    return(NA)
+  })
+}
+
+waitForElement <- function(remDr, css_selector, timeout = 10) {
+  for (i in seq_len(timeout)) {
+    if (length(remDr$findElements(using = 'css selector', css_selector)) > 0) {
+      return(TRUE)
+    } else {
+      Sys.sleep(1)
+    }
+  }
+  stop("Timeout waiting for element")
+}
+
+
+artist_data_text <- purrr::imap(all_artists_data, function(artist_data, artist_name) {
+  paste("Artist: ", artist_name, "\n", 
+        sapply(artist_data, function(texts) {
+          paste("Artwork Details: ", paste(texts, collapse = " | "), "\n\n")
+        }),
+        collapse = "\n")
+})
+
+# The folder path - all artist artwork metadata will be saved to individual txt files to this folder on your local machine
+folder_path <- file.path(Sys.getenv("HOME"), "Desktop", "ArtistData")
+
+# Create the folder if it doesn't exist
+if (!dir.exists(folder_path)) {
+  dir.create(folder_path, recursive = TRUE)
+}
+
+
+save_artist_data <- function(artist_data, artist_name, folder_path) {
+  # Create a file name
+  file_name <- file.path(folder_path, paste0(gsub(" ", "_", artist_name), "_data.txt"))
+  
+  # Convert artist's data to a readable string format
+  artist_data_text <- sapply(artist_data, function(texts) {
+    paste("Artwork Details: ", paste(texts, collapse = " | "), "\n\n")
+  }, simplify = FALSE)
+  
+  # Combine all artwork details into one large string
+  final_text <- paste(artist_data_text, collapse = "\n")
+  
+  # Write to a text file named after the artist
+  writeLines(final_text, file_name)
+}
+
+max_artworks <- 5 
+all_artists_data <- list()
+for (artist_name in artists) {
+
+  remDr$navigate("https://www.artprice.com/search")
+  Sys.sleep(5)
+  
+  #enter name of artist
+  remDr$findElement(using = 'css selector', "input[id='universal-search-input']")
+  search_input <- remDr$findElement(using = 'css selector', "input[id='universal-search-input']")
+  search_input$clearElement()
+  Sys.sleep(5)  # wait for any JS reactions to the clear action
+  search_input$sendKeysToElement(list(artist_name, "\uE007")) 
+  Sys.sleep(5)
+  
+  artist_links <- remDr$findElements(using = 'css selector', '.items .item .r1 a')
+  print(length(artist_links)) 
+  if (length(artist_links) > 0) {
+    for (link in artist_links) {
+      link_text <- link$getElementText()[[1]]
+      cat("Found Link Text:", link_text, "\n")  # Output found text for debugging
+      
+      # Convert both texts to lower case to ensure case insensitive comparison
+      if (tolower(link_text) == tolower(artist_name)) {
+        link$clickElement()  # Click on the correct link
+        Sys.sleep(10) # Allow artist page to load
+        break
+      }
+    }
+  } else {
+    cat("No links found. Check the selector or the page for changes.")
+    next
+  }
+  
+  print(artist_name)
+  
+  #look at past auctions
+  if (waitForElement(remDr, "a[id='sln_ps']")) {
+    past_auctions <- remDr$findElement(using = 'css selector', "a[id='sln_ps']")
+    past_auctions$clickElement()
+  } else {
+    message("Element not found")
+  }
+  
+  open_filter <- remDr$findElement(using ='css selector', '.common-dropdown.right.common-drop-down-to-validate')
+  open_filter$clickElement()
+  Sys.sleep(3)
+  auction_asc <- remDr$findElement(using ='css selector', "label[for='sort-radio-datesale_asc']")
+  auction_asc$clickElement()
+  Sys.sleep(3)
+  apply_button<- remDr$findElement(using = 'css selector', ".btn.btn-primary.pull-right")
+  apply_button$clickElement()
+  
+  artwork_divs <- remDr$findElements(using = 'css selector', '.lots-list.lots-square .lot-container .lot.lot-square')
+  print(length(artwork_divs))
+  
+  all_texts <- list()
+  
+  for (i in seq_len(min(length(artwork_divs), max_artworks))) {
+    artwork <- artwork_divs[[i]]
+    # Fetch all lot data blocks
+    lot_data_elements <- artwork$findElements(using = 'css selector', '.lot-datas-block')
+    texts <- sapply(lot_data_elements, function(element) element$getElementText()[[1]], simplify = TRUE, USE.NAMES = FALSE)
+    
+    # Remove duplicates
+    unique_texts <- unique(texts)
+    
+    # Debugging output
+    print(paste("Iteration:", i))
+    print("Texts before removing duplicates:")
+    print(texts)
+    print("Texts after removing duplicates:")
+    print(unique_texts)
+    
+    # Store texts
+    all_texts <- c(all_texts, paste(unique_texts, collapse = " | "))  # Using unique_texts instead of texts
+    Sys.sleep(5)
+    
+  }
+  
+  Sys.sleep(5)
+  
+  open_filter <- remDr$findElement(using ='css selector', '.common-dropdown.right.common-drop-down-to-validate')
+  open_filter$clickElement()
+  Sys.sleep(5)
+  auction_desc <- remDr$findElement(using ='css selector', "label[for='sort-radio-datesale_desc']")
+  auction_desc$clickElement()
+  Sys.sleep(5)
+  apply_button<- remDr$findElement(using = 'css selector', ".btn.btn-primary.pull-right")
+  apply_button$clickElement()
+  
+  Sys.sleep(3)
+  
+  artwork_divs <- remDr$findElements(using = 'css selector', '.lots-list.lots-square .lot-container .lot.lot-square')
+  print(length(artwork_divs))
+  
+  for (i in seq_len(min(length(artwork_divs), max_artworks))) {
+    artwork <- artwork_divs[[i]]
+    # Fetch all lot data blocks
+    lot_data_elements <- artwork$findElements(using = 'css selector', '.lot-datas-block')
+    texts <- sapply(lot_data_elements, function(element) element$getElementText()[[1]], simplify = TRUE, USE.NAMES = FALSE)
+    
+    # Remove duplicates
+    unique_texts <- unique(texts)
+    
+    # Debugging output
+    print(paste("Iteration:", i))
+    print("Texts before removing duplicates:")
+    print(texts)
+    print("Texts after removing duplicates:")
+    print(unique_texts)
+    
+    # Store texts
+    all_texts <- c(all_texts, paste(unique_texts, collapse = " | "))   # Using unique_texts instead of texts
+    
+  }
+  all_artists_data[[artist_name]] <- all_texts
+  save_artist_data(all_texts, artist_name, folder_path)
+  Sys.sleep(10)
+}
+
+#stop the session
+remDr$close()
+rD[["server"]]$stop()
+
+
+#once you have the text files in the folder, you will need to iterate through text files and use regex to process data appropriately and add to the dataframe
+#adding to dataframe
+```
+
+## Data Methodology
+
+Gathering a robust data for any kind of meaningful analysis is of critical important. With more time, it would be essential to gather larger and more various data on a diverse set of artists. One of the more difficult parts of working with art, and trying to understand the commercial value of art, is to overcome a certain level of bias. Collecting and analyzing data on only well known famous artists will provide only so much insight.
+
+This is why, for future evaluation, it will be essential to combine a curated and more random approach to collecting data. Using some sort of random selection to prevent bias might be helpful in preventing a overly biased data collection process, which would in turn skew the auction data one way or the other.
+
+With all of this said, given the tight time constraints, I opted for a hand selected group of auction results from around 10 artists, spanning contemporary, modern, and 19th century, as well as representing a variety of mediums (painting, sculpture, and photography).
+
+## How to Measure Value
+
+In the complex landscape of art valuation, the **sale/estimate ratio** serves as a pivotal metric. By focusing on this ratio, we can gain insights into how artworks are valued against pre-sale expectations set by experts.
+
+### Why Focus on Sale/Estimate Ratio?
+
+-   **Demand vs. Expectation**: The sale/estimate ratio effectively captures the discrepancy between market expectations and actual outcomes. A high ratio indicates that the artwork sold for much more than its estimated value, suggesting a high demand or a possibly undervalued estimate.
+
+-   **Economic Indicators**: This ratio can also reflect broader economic conditions (or at least this is my assumption). For instance, high ratios across numerous auctions might suggest a flourishing economic environment where collectors are willing to spend more, reflecting greater disposable income or confidence in art.
+
+-   **Artist Popularity and Market Trends**: Changes in the sale/estimate ratio over time can indicate shifts in an artist's market popularity or general trends within different art genres or periods. Analyzing these fluctuations helps identify what types of art or which artists are gaining or losing market traction.
+
+### Analytical Value
+
+By analyzing the sale/estimate ratio, we can:
+
+-   Assess the accuracy of market valuations by auction houses.
+
+-   Understand the economic underpinnings that influence art buying behaviors.
+
+-   Highlight periods of significant market activity that could correlate with economic cycles.
+
+This metric thus provides a straightforward yet profound way to analyze the art market, offering insights not just into art valuation but also into economic conditions.
+
+## Analyzing What We Have
+
+Now, we'll move forward with cleaning and analyzing a more curated selection of artist data, along with some economic indicators, which could provide some useful insight into our analysis.
+
+```{r importing}
+
+artist_data_raw <- read_csv("https://raw.githubusercontent.com/awrubes/Data607_FinalProject/main/ArtistData.csv")
+head(artist_data_raw)
+
+global_economic_raw <- read_csv("https://raw.githubusercontent.com/awrubes/Data607_FinalProject/main/global_economic.csv")
+head(global_economic_raw)
+
+```
+
+## Data Manipulation and Cleaning
+
+The data cleaning process for the art auction data involves several steps to prepare the data for analysis. These steps include extracting relevant information, normalizing data formats, and creating new variables for deeper insights.
+
+### Extracting Creation Dates
+
+We start by extracting the year of creation from the `artwork_title` column. This is presumed to be enclosed in parentheses and represented by four digits.
+
+### Cleaning Price Estimates
+
+The `price_estimate` column contains estimates often given as a range (e.g., "\$8,000 - \$12,000"). The cleaning involves several steps:
+
+-   Splitting the range to calculate the average of the low and high estimates if a range is detected; otherwise, the single value is converted directly to numeric.
+
+### Normalizing Sale Price
+
+The `sale_price` is also formatted as a string with a dollar sign and commas. These are removed, and the result is converted to a numeric format.
+
+### Calculating Sale/Estimate Ratio
+
+A new column `sale_estimate_ratio` is created to measure how the actual sale price compares to the estimate. This ratio is informative of the market's valuation of the artwork relative to its estimated value.
+
+```{r art_cleaning}
+
+#normalize data and values across columns
+
+#extract creation dates, first four digits
+artist_data_cleaned <- artist_data_raw %>%
+  mutate(
+    creation_date = str_extract(artwork_title, "\\d{4}") %>%
+      str_replace_all("[()]", "")
+  )
+
+#create col for average estimate (middle of low and high) 
+artist_data_cleaned <- artist_data_cleaned %>%
+  mutate(
+    cleaned_estimate = str_replace_all(price_estimate, "\\$", ""), 
+    cleaned_estimate = str_trim(cleaned_estimate),
+    avg_estimate = if_else(
+      str_detect(cleaned_estimate, "-"), # Detect if there's a range
+      {
+        num1 <- str_extract(cleaned_estimate, "^[\\d,]+") %>%
+          str_replace_all(",", "") %>% 
+          as.numeric()
+        num2 <- str_extract(cleaned_estimate, "[\\d,]+$") %>%
+          str_replace_all(",", "") %>% 
+          as.numeric()
+        # Output for debugging:
+        (num1 + num2) / 2
+      },
+      str_replace_all(cleaned_estimate, ",", "") %>% 
+        as.numeric()
+    )
+  )
+
+#normalize sale_price column
+artist_data_cleaned <- artist_data_cleaned %>%
+  mutate(
+    sale_price = str_replace_all(sale_price, "\\$", "") %>%
+      str_replace_all(",", "") %>%
+      as.numeric()
+  )
+
+#create estimate sale price ratio
+artist_data_cleaned <- artist_data_cleaned %>%
+  mutate(
+    sale_estimate_ratio = if_else(avg_estimate == 0 | is.na(avg_estimate), NA_real_, sale_price / avg_estimate)
+  )
+
+#convert sale_date column to date format for ease of use
+artist_data_new <- artist_data_cleaned %>%
+  mutate(
+    sale_date = as.Date(sale_date, format = "%d %b %Y") 
+  )
+
+#normalize remaining columns
+artist_data_new <- artist_data_new %>%
+  mutate(
+    artist_name = tolower(artist_name), 
+    artwork_title = tolower(artwork_title),
+    auction_house = tolower(auction_house),
+  )
+
+head(artist_data_new)
+
+```
+
+Next, we'll move on to clean and reformat the global economic indicators dataframe to prepare it for analysis. As you'll see, the df is in a wide format and will need to be converted to long, removing unneeded columns.
+
+### Reshaping Global Economic Data
+
+The global economic data is transformed from a wide format, where years are spread across columns, to a long format where each row represents a single year's data for a specific economic indicator.
+
+### Cleaning Up Global Economic Data
+
+Unnecessary columns like `Country Code` and `Series Code` are removed to streamline the dataset.
+
+```{r global_economics}
+
+#convert global economic data to long format from wide, using regex to match year ignoring formatting and making integer
+global_economic_clean <- global_economic_raw %>%
+  pivot_longer(
+    cols = matches("YR\\d{4}"), 
+    names_to = "Year",
+    names_prefix = ".*YR", 
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Year = str_extract(Year, "\\d+") %>%  
+      as.integer() 
+  )
+
+#get rid of country code and series code columns
+global_economic_clean <- global_economic_clean %>%
+  select(-all_of(c("Country Code", "Series Code")))
+
+head(global_economic_clean)
+
+#look at the economic variables here
+unique_series_names <- unique(global_economic_clean$`Series Name`)
+
+```
+
+## Exploratory Data Analysis
+
+```{r visual_exploratory}
+
+#auction house sale/estimate mean
+# Calculate mean sale/estimate ratio for each auction house
+mean_ratios <- artist_data_new %>%
+  group_by(auction_house) %>%
+  filter(n() >= 5) %>%
+  summarize(mean_ratio = base::mean(sale_estimate_ratio, na.rm = TRUE), .groups = 'drop')
+
+# Create the bar chart
+ggplot(mean_ratios, aes(x = auction_house, y = mean_ratio, fill = auction_house)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  labs(title = "Mean Sale/Estimate Ratio by Auction House",
+       x = "Auction House",
+       y = "Mean Sale/Estimate Ratio") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+#visualize avg sales/estimate ratio per artist
+artist_avg_ratio <- artist_data_new %>%
+  group_by(artist_name) %>%
+  filter(n() >= 5) %>%  # Ensure enough data points per artist
+  summarize(avg_ratio = base::mean(sale_estimate_ratio, na.rm = TRUE))
+
+# bar chart visualization
+ggplot(artist_avg_ratio, aes(x = reorder(artist_name, avg_ratio), y = avg_ratio)) +
+  geom_col() +
+  coord_flip() +  # flip coordinates for legibility
+  labs(title = "Average Sale/Estimate Ratio by Artist",
+       x = "Artist",
+       y = "Average Ratio") +
+  theme_minimal()
+
+artist_data_cleaned <- artist_data_cleaned %>%
+  mutate(
+    sale_date = dmy(sale_date),  # converts '19 Nov 1992' to Date
+    year = year(sale_date)  # extract year from Date object
+  )
+
+#scatterplot with legend for artists looking at the SE ratio
+artist_yearly_avg_ratio <- artist_data_cleaned %>%
+  mutate(year = year(sale_date)) %>%
+  group_by(artist_name, year) %>%
+  summarize(avg_ratio = base::mean(sale_estimate_ratio, na.rm = TRUE), .groups = 'drop') %>%
+  filter(n() >= 5)  # Optionally, filter artists with at least 5 artworks sold per year for stability in averages
+
+
+
+```
+
+```{r medium_box}
+
+#look at SE ratio based on medium
+artist_data_cleaned_med <- artist_data_cleaned %>%
+  mutate(
+    medium_clean = tolower(medium),  # Convert to lower case for uniformity
+    medium_clean = str_replace_all(medium_clean, " on ", "/"),  # Standardize 'on' to '/'
+    medium_clean = str_replace_all(medium_clean, ", ", "/"),  # Replace commas with slashes for consistency
+    medium_clean = str_replace_all(medium_clean, " and ", "/"),  # Replace 'and' with '/'
+    medium_clean = str_replace_all(medium_clean, " with ", "/")  # Replace 'with' with '/'
+  )
+
+artist_data_cleaned_med <- artist_data_cleaned_med %>%
+  mutate(
+    medium_clean = str_extract(medium_clean, "^(oil|acrylic|watercolor|gouache|ink|pastel|charcoal|sculpture|bronze|mixed media|photograph|print|drawing|construction|installation|c print|gelatin silver print|chromogenic print)"),
+    medium_clean = if_else(str_detect(medium_clean, "canvas|panel|paper|wood|metal|plastic"), "mixed media", medium_clean)
+  )
+
+artist_data_cleaned_med <- artist_data_cleaned_med %>%
+  mutate(
+    medium_clean = if_else(is.na(medium_clean), "other", medium_clean)
+  )
+
+# Create the box plot
+ggplot(artist_data_cleaned_med, aes(x = medium_clean, y = sale_estimate_ratio)) +
+  geom_boxplot() +
+  labs(title = "Box Plot of Sale/Estimate Ratio by Medium",
+       x = "Medium",
+       y = "Sale/Estimate Ratio") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+```
+
+## Statistical Analysis and Regressions
+
+The analysis portion digs into the curated dataset to uncover potential correlations between art market behaviors and economic indicators. By cleaning, transforming, and visualizing this data, we aim to understand how external economic factors may influence art valuations. This portion of the project doesn't yield much information or useful insight. However, I wanted to include it in order to show how, given a larger dataset, one might try to look for interesting trends and correlations.
+
+```{r regressions}
+
+#creating regression to look at correlation between sales/estimate ratio and economic factors
+
+#calculate yearly mean or median sale/estimate ratios
+yearly_ratios <- artist_data_cleaned %>%
+  group_by(year) %>%
+  summarize(
+    Avg_Sale_Estimate_Ratio = base::mean(sale_estimate_ratio, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+#North America
+
+# Filter for Real Interest Rate for United States
+global_economic_interest <- global_economic_clean %>%
+  filter(`Series Name` == "Real interest rate (%)", `Country Name` == "United States") %>%
+  select(Year, Value) %>%
+  rename(Real_Interest_Rate = Value)
+
+artist_data_cleaned$year <- as.integer(artist_data_cleaned$year)
+global_economic_interest$Year <- as.integer(global_economic_interest$Year)
+
+merged_data_interest <- merge(artist_data_cleaned, global_economic_interest, by.x = "year", by.y = "Year", all.x = TRUE)
+
+#filter out the NA values
+filtered_data_interest <- merged_data_interest %>%
+  filter(!is.na(Real_Interest_Rate))
+
+# linear regression for interest rates and SE ratio
+model <- lm(sale_estimate_ratio ~ Real_Interest_Rate, data = filtered_data_interest)
+summary(model)
+
+ggplot() +
+  geom_line(data = filtered_data_interest, aes(x = year, y = Real_Interest_Rate, group = 1), color = "blue") +
+  geom_line(data = filtered_data_interest, aes(x = year, y = sale_estimate_ratio, group = 1), color = "red", sec.axis = sec_axis(~./max(merged_data$sale_estimate_ratio) * max(merged_data$GDP_per_capita), name = "Sale/Estimate Ratio")) +
+  labs(title = "Economic Indicators vs. Art Market Behavior Over Time",
+       x = "Year",
+       y = "US Interest Rate (Real)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## Conclusions
+
+From the analyzed data, it appears that while certain patterns can be discerned, specifically in the exploratory analysis, the art market remains complex and influenced by numerous factors beyond just economics.
+
+## Challenges and Solutions
+
+### Selecting Relevant Data Metrics for Art Investment Analysis
+
+One of the central challenges of this project was identifying relevant data metrics that could effectively track the value of art as an investment vehicle over time, especially in the context of fluctuating economic conditions like inflation.
+
+#### Solution:
+
+The breakthrough came with the realization that the **sale/estimate ratio** could serve as a robust indicator of market demand versus expert valuation expectations. This ratio effectively highlights whether artworks are selling above, below, or at their anticipated market value. High ratios indicate a strong market demand or underestimations by experts, providing a clear, quantifiable measure of investment performance that also accounts for market sentiment.
+
+### Technical Challenges with RSelenium
+
+Another significant challenge involved setting up RSelenium to automate data collection from Artprice. The complexity of web scraping stems from the dynamic nature of web pages, coupled with the need to navigate through login screens, search interfaces, and artwork listings.
+
+#### Solution:
+
+To overcome these challenges, the project involved:
+
+-   **Environment Setup:** Configuring RSelenium required the correct setup of drivers and ensuring compatibility with the browser version used for scraping.
+
+-   **Script Robustness:** The RSelenium script was refined to handle various web elements dynamically. Functions like `waitForElement` and `safe_extract` were implemented to manage timeouts and element availability.
+
+-   **Error Handling:** Robust error handling and debugging was incorporated to manage failed login attempts, missing data fields, and navigation errors.
+
+### Future Directions
+
+I would like to expand the project by collecting a much more substantial dataset, with a more focused approach in the kind of art collected, to see if any trends do in fact arise. This would require automating the data collection across more artists and a longer timeline. Further research could also integrate more granular economic data to refine the analysis of market influences on art pricing.
